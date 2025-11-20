@@ -259,6 +259,12 @@ async def select_variant(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(OrderFlow.selecting_variants, F.data == "done_selecting_variants")
 async def done_selecting_variants(callback: types.CallbackQuery, state: FSMContext):
+    user_data = await state.get_data()
+    selected_variants = user_data.get("selected_variants", [])
+
+    if not selected_variants:
+        return await callback.answer("Please select at least one option to proceed.", show_alert=True)
+
     await callback.message.edit_text("Please enter the quantity you'd like to order (e.g., 1, 2, 5):")
     await state.set_state(OrderFlow.entering_quantity)
 
