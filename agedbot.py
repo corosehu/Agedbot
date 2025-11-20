@@ -711,10 +711,29 @@ async def support_msg(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(SupportFlow.chatting)
 async def support_forward(msg: types.Message):
+    user = msg.from_user
+    username = f"@{user.username}" if user.username else "N/A"
+
+    issue_text = msg.text or msg.caption or "[Media Message]"
+
+    notification_text = (
+        f"📩 <b>New Support Request</b>\n\n"
+        f"<b>Name:</b> <a href=\"tg://user?id={user.id}\">{user.full_name}</a>\n"
+        f"<b>Username:</b> {username}\n"
+        f"<b>User ID:</b> <code>{user.id}</code>\n\n"
+        f"<b>User Support Issue:</b>\n{issue_text}"
+    )
+
     try:
-        await msg.forward(SUPPORT_CHANNEL_ID)
+        if msg.photo:
+            await bot.send_photo(SUPPORT_CHANNEL_ID, msg.photo[-1].file_id, caption=notification_text)
+        else:
+            await bot.send_message(SUPPORT_CHANNEL_ID, notification_text)
+
+        await msg.reply("✅ <b>Your support request has been sent to the admin team.</b>\n\nWe will contact you shortly.")
     except Exception as e:
         print(f"Failed to forward message to support channel: {e}")
+        await msg.reply("❌ <b>Error sending request.</b> Please try again later.")
 
 @dp.callback_query(F.data == "continue")
 async def continue_handler(callback: types.CallbackQuery, state: FSMContext):
