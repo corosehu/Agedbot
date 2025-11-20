@@ -141,6 +141,21 @@ async def start_cmd(msg: types.Message):
         users.append(uid)
         save_all()
 
+        # Notify channel about new user
+        user = msg.from_user
+        username = f"@{user.username}" if user.username else "N/A"
+        notification_text = (
+            f"🆕 <b>New User Started Bot</b>\n\n"
+            f"<b>Name:</b> <a href=\"tg://user?id={user.id}\">{user.full_name}</a>\n"
+            f"<b>Username:</b> {username}\n"
+            f"<b>User ID:</b> <code>{user.id}</code>\n"
+            f"<b>Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        try:
+            await bot.send_message(SUPPORT_CHANNEL_ID, notification_text)
+        except Exception as e:
+            print(f"Failed to send new user notification: {e}")
+
     # Silently remove the old reply keyboard by sending and deleting a temporary message
     temp_msg = await msg.answer("...", reply_markup=ReplyKeyboardRemove())
     await temp_msg.delete()
