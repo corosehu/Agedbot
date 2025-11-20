@@ -38,6 +38,9 @@ class OrderFlow(StatesGroup):
     selecting_payment_method = State()
     uploading_screenshot = State()
 
+class SupportFlow(StatesGroup):
+    chatting = State()
+
 class ProductFlow(StatesGroup):
     add_name = State()
     add_variants = State()
@@ -49,6 +52,7 @@ class ProductFlow(StatesGroup):
 
 BOT_TOKEN = "7848720803:AAG3rU2bRB3BBB6iI0-BNgxqneTO0DU0ewA"
 ADMIN_ID = 6675623588
+SUPPORT_CHANNEL_ID = "-100XXXXXXXXXX"
 
 PAYMENT_DETAILS = {
     "BTC": {"name": "BTC", "address": "14nfbfY9D2qoLXTCkwZLcREBREMFcZsTq3", "symbol": "₿"},
@@ -334,7 +338,7 @@ async def upload_screenshot(msg: types.Message, state: FSMContext):
 
     order = user_orders[-1]
     order["screenshot_file_id"] = msg.photo[-1].file_id
-    order["status"] = "payment_submitted"
+    order["status"] = "pending_confirmation"
     save_all()
 
     await msg.reply("<b>Screenshot received.</b> Your order is now pending admin confirmation.")
@@ -344,38 +348,133 @@ async def upload_screenshot(msg: types.Message, state: FSMContext):
     if "selected_variants" in order and order["selected_variants"]:
         variants_text = "\n<b>Variants:</b> " + ", ".join(order["selected_variants"])
 
-    payment_info = PAYMENT_DETAILS.get(order['payment_method'], {"name": "Unknown"})
     admin_notification = (
-        f"<b>New Payment Submitted!</b>\n\n"
-        f"<b>Order ID:</b> <code>{order['id']}</code>\n"
-        f"<b>User ID:</b> <code>{order['user']}</code>\n"
+        f"🆕 <b>New Order Received</b>\n\n"
+        f"<b>Order ID:</b> #{order['id']}\n"
+        f"<b>User:</b> <a href=\"tg://user?id={order['user']}\">{order['user']}</a>\n"
         f"<b>Product:</b> {product['name']}{variants_text}\n"
         f"<b>Quantity:</b> {order['qty']}\n"
-        f"<b>Amount:</b> ${order['amount']}\n"
-        f"<b>Payment Method:</b> {payment_info['name']}\n\n"
-        f"Please verify the payment and confirm the order with: <code>/confirm {order['id']}</code>"
+        f"<b>Total:</b> ${order['amount']}\n"
+        f"<b>Status:</b> ⏳ Pending Confirmation\n\n"
+        f"<i>Click below to confirm or reject this order.</i>"
     )
-    await bot.send_photo(ADMIN_ID, order["screenshot_file_id"], caption=admin_notification)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_order_{order['id']}"),
+        InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_order_{order['id']}")
+    )
+
+    try:
+        sent_msg = await bot.send_photo(SUPPORT_CHANNEL_ID, order["screenshot_file_id"], caption=admin_notification, reply_markup=kb.as_markup())
+        order["channel_msg_id"] = sent_msg.message_id
+        save_all()
+    except Exception as e:
+        print(f"Failed to send order notification to channel: {e}")
+
     await state.clear()
 
+@dp.callback_query(F.data.startswith("confirm_order_"))
+async def confirm_order_callback(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+         return await callback.answer("You are not authorized.", show_alert=True)
 
-@dp.message(Command("confirm"), F.from_user.id == ADMIN_ID)
-async def confirm_order(msg: types.Message):
-    try:
-        _, order_id = msg.text.split()
-        order_id = int(order_id)
-    except ValueError:
-        return await msg.reply("<b>Invalid Format.</b>\n\nPlease use: <code>/confirm &lt;order_id&gt;</code>")
-
+    order_id = int(callback.data.split("_")[-1])
     order = next((o for o in orders if o["id"] == order_id), None)
+
     if not order:
-        return await msg.reply("<b>Order not found.</b>")
+        return await callback.answer("Order not found.", show_alert=True)
+
+    if order["status"] != "pending_confirmation":
+         return await callback.answer("Order already processed.", show_alert=True)
 
     order["status"] = "confirmed"
     save_all()
 
-    await bot.send_message(order["user"], "✅ <b>Order Confirmed!</b>\n\nOur team will contact you shortly on Telegram for delivery. Thank you!")
-    await msg.reply(f"Order <code>{order_id}</code> has been confirmed. User notified.")
+    # Notify User
+    try:
+        await bot.send_message(order["user"], "✅ <b>Order Confirmed!</b>\n\nOur team will contact you shortly for delivery. Thank you!")
+    except Exception as e:
+        print(f"Failed to notify user {order['user']}: {e}")
+
+    # Update Channel Message
+    try:
+        product = next((p for p in products if p["id"] == order['product_id']), None)
+        variants_text = ""
+        if "selected_variants" in order and order["selected_variants"]:
+            variants_text = "\n<b>Variants:</b> " + ", ".join(order["selected_variants"])
+
+        new_caption = (
+            f"🆕 <b>New Order Received</b>\n\n"
+            f"<b>Order ID:</b> #{order['id']}\n"
+            f"<b>User:</b> <a href=\"tg://user?id={order['user']}\">{order['user']}</a>\n"
+            f"<b>Product:</b> {product['name']}{variants_text}\n"
+            f"<b>Quantity:</b> {order['qty']}\n"
+            f"<b>Total:</b> ${order['amount']}\n"
+            f"<b>Status:</b> ✅ CONFIRMED – Notified user"
+        )
+
+        await bot.edit_message_caption(
+            chat_id=SUPPORT_CHANNEL_ID,
+            message_id=callback.message.message_id,
+            caption=new_caption,
+            reply_markup=None
+        )
+    except Exception as e:
+        print(f"Failed to update channel message: {e}")
+
+    await callback.answer("Order Confirmed")
+
+@dp.callback_query(F.data.startswith("reject_order_"))
+async def reject_order_callback(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+         return await callback.answer("You are not authorized.", show_alert=True)
+
+    order_id = int(callback.data.split("_")[-1])
+    order = next((o for o in orders if o["id"] == order_id), None)
+
+    if not order:
+        return await callback.answer("Order not found.", show_alert=True)
+
+    if order["status"] != "pending_confirmation":
+         return await callback.answer("Order already processed.", show_alert=True)
+
+    order["status"] = "rejected"
+    save_all()
+
+    # Notify User
+    try:
+        await bot.send_message(order["user"], "❌ <b>Order Rejected</b>\n\nWe're sorry, but your order could not be processed. Please contact support for details.")
+    except Exception as e:
+        print(f"Failed to notify user {order['user']}: {e}")
+
+    # Update Channel Message
+    try:
+        product = next((p for p in products if p["id"] == order['product_id']), None)
+        variants_text = ""
+        if "selected_variants" in order and order["selected_variants"]:
+            variants_text = "\n<b>Variants:</b> " + ", ".join(order["selected_variants"])
+
+        new_caption = (
+            f"🆕 <b>New Order Received</b>\n\n"
+            f"<b>Order ID:</b> #{order['id']}\n"
+            f"<b>User:</b> <a href=\"tg://user?id={order['user']}\">{order['user']}</a>\n"
+            f"<b>Product:</b> {product['name']}{variants_text}\n"
+            f"<b>Quantity:</b> {order['qty']}\n"
+            f"<b>Total:</b> ${order['amount']}\n"
+            f"<b>Status:</b> ❌ REJECTED – User notified"
+        )
+
+        await bot.edit_message_caption(
+            chat_id=SUPPORT_CHANNEL_ID,
+            message_id=callback.message.message_id,
+            caption=new_caption,
+            reply_markup=None
+        )
+    except Exception as e:
+        print(f"Failed to update channel message: {e}")
+
+    await callback.answer("Order Rejected")
 
 # ------------------------ PRODUCT MANAGEMENT ------------------------
 
@@ -606,11 +705,20 @@ async def my_orders(callback: types.CallbackQuery):
 # ------------------------ SUPPORT ------------------------
 
 @dp.callback_query(F.data == "support")
-async def support_msg(callback: types.CallbackQuery):
+async def support_msg(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("<b>Need Help?</b>\n\nIf you have any questions or issues, please describe them in a message. Our admin will get back to you as soon as possible.", reply_markup=back_kb)
+    await state.set_state(SupportFlow.chatting)
+
+@dp.message(SupportFlow.chatting)
+async def support_forward(msg: types.Message):
+    try:
+        await msg.forward(SUPPORT_CHANNEL_ID)
+    except Exception as e:
+        print(f"Failed to forward message to support channel: {e}")
 
 @dp.callback_query(F.data == "continue")
-async def continue_handler(callback: types.CallbackQuery):
+async def continue_handler(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.delete()
     await callback.message.answer(
         "<b>Welcome to the Instagram Supplier Bot!</b>\n\n"
