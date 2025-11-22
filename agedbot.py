@@ -22,6 +22,7 @@
 import json
 import os
 import asyncio
+import requests
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
@@ -53,6 +54,8 @@ class ProductFlow(StatesGroup):
 BOT_TOKEN = "7848720803:AAG3rU2bRB3BBB6iI0-BNgxqneTO0DU0ewA"
 ADMIN_ID = 6675623588
 SUPPORT_CHANNEL_ID = -1003397194178
+WEBHOOK_URL = 'https://promotect.xo.je/webhooks/endpoint.php?key=wh-2f574949347711364189280d4c5bb0f4'
+WEBHOOK_SECRET = 'f682f00e5c67928cfa6de59007f68f6ffb374f60f7f199fd1a7cae9ee9083310'
 
 PAYMENT_DETAILS = {
     "BTC": {"name": "BTC", "address": "14nfbfY9D2qoLXTCkwZLcREBREMFcZsTq3", "symbol": "₿"},
@@ -132,6 +135,27 @@ def save_all():
     save_json(PRODUCTS_FILE, products)
     save_json(ORDERS_FILE, orders)
 
+# ------------------------ WEBHOOK HELPER ------------------------
+
+def send_webhook(event_type, data):
+    def _send():
+        payload = {
+            'event': event_type,
+            'data': data,
+            'timestamp': str(datetime.now())
+        }
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Secret-Token': WEBHOOK_SECRET
+        }
+        try:
+            requests.post(WEBHOOK_URL, headers=headers, data=json.dumps(payload, default=str))
+        except Exception as e:
+            print(f"Webhook error ({event_type}): {e}")
+
+    # Run in a separate thread to avoid blocking the async loop
+    asyncio.get_event_loop().run_in_executor(None, _send)
+
 # ------------------------ START ------------------------
 
 @dp.message(Command("start"))
@@ -153,6 +177,7 @@ async def start_cmd(msg: types.Message):
         )
         try:
             await bot.send_message(SUPPORT_CHANNEL_ID, notification_text)
+            send_webhook("new_user", {"user_id": user.id, "username": user.username, "full_name": user.full_name})
         except Exception as e:
             print(f"Failed to send new user notification: {e}")
 
@@ -330,6 +355,8 @@ async def select_payment(callback: types.CallbackQuery, state: FSMContext):
     orders.append(new_order)
     save_all()
 
+    send_webhook("order_created", new_order)
+
     variants_text = ""
     if "selected_variants" in user_data and user_data.get("selected_variants"):
         variants_text = "\n<b>Variants:</b> " + ", ".join([product["variants"][i]["name"] for i in user_data["selected_variants"]])
@@ -361,6 +388,8 @@ async def upload_screenshot(msg: types.Message, state: FSMContext):
     order["screenshot_file_id"] = msg.photo[-1].file_id
     order["status"] = "pending_confirmation"
     save_all()
+
+    send_webhook("payment_submitted", order)
 
     await msg.reply("<b>Screenshot received.</b> Your order is now pending admin confirmation.")
 
@@ -412,6 +441,8 @@ async def confirm_order_callback(callback: types.CallbackQuery):
     order["status"] = "confirmed"
     save_all()
 
+    send_webhook("order_confirmed", order)
+
     # Notify User
     try:
         await bot.send_message(order["user"], "✅ <b>Order Confirmed!</b>\n\nOur team will contact you shortly for delivery. Thank you!")
@@ -462,6 +493,8 @@ async def reject_order_callback(callback: types.CallbackQuery):
 
     order["status"] = "rejected"
     save_all()
+
+    send_webhook("order_rejected", order)
 
     # Notify User
     try:
@@ -750,6 +783,14 @@ async def support_forward(msg: types.Message):
             await bot.send_photo(SUPPORT_CHANNEL_ID, msg.photo[-1].file_id, caption=notification_text)
         else:
             await bot.send_message(SUPPORT_CHANNEL_ID, notification_text)
+
+        send_webhook("support_message", {
+            "user_id": user.id,
+            "username": user.username,
+            "full_name": user.full_name,
+            "message": issue_text,
+            "has_photo": bool(msg.photo)
+        })
 
         await msg.reply("✅ <b>Your support request has been sent to the admin team.</b>\n\nWe will contact you shortly.")
     except Exception as e:
